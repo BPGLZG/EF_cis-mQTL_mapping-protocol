@@ -1,0 +1,199 @@
+1. Set working directory
+setwd('/data/projects/endometriosis/qc_final')
+
+-------------------------------------------------------------------------
+2. Convert long format files to PLINK binary format
+a) GSA 2022 (batch 1)
+plink --file /data/rawdata/genotyping/gsa/EFA/GSA2023_1003/PLINK_220323_0533/GSA2023_1003 --make-bed --out gsa2022
+-------------------------------------------------------------------------
+725497 variants and 144 people
+-------------------------------------------------------------------------
+
+b) GSA 2023 (batch 2)
+plink --file /data/rawdata/genotyping/gsa/EFA/GSA2023_1082_025_V3/GSA2023_1082_025_V3/PLINK_150224_1052/GSA2023_1082_025_V3 --make-bed --out gsa2023
+
+I) Keep only endometrial fluid samples (filter saliva samples)
+grep ENDO gsa2023.fam  | awk '{print$1,$2}'>endo_samp.txt
+
+wc endo_samp.txt
+
+II) Use PLINK to subset the samples
+plink --bfile gsa2023 --keep endo_samp.txt --make-bed --out only_endo
+-------------------------------------------------------------------------
+725497 variants and 66 people
+-------------------------------------------------------------------------
+
+c) Merge both datasets (batch 1 and batch 2)
+plink --bfile gsa2022 --bmerge only_endo --out all
+-------------------------------------------------------------------------
+725497 variants and 210 people
+-------------------------------------------------------------------------
+
+
+-------------------------------------------------------------------------
+3. Analyze markers (SNPs)
+a) Calculate MAF
+plink --bfile all --freq --out all
+
+b) Calculate missing genotypes
+plink --bfile all --missing --out all
+
+c) Remove markers as per maf/geno/hwe thresholds
+plink --bfile all --geno 0.05 --hwe 1e-06 --maf 0.005 --make-bed --out all_geno0.05_hwe1e06_maf0.005
+
+
+-------------------------------------------------------------------------
+4. Analyze individuals (samples)
+a) Analyze heterozygosity
+plink --bfile all_geno0.05_hwe1e06_maf0.005 --het
+
+b) Plot missingness vs heterozygosity (run the imiss-vs-het.R script)
+Rscript imiss-vs-het.R all.imiss plink.het
+
+c) Remove individuals with > 0.03 missing markers
+plink --bfile all_geno0.05_hwe1e06_maf0.005 --mind 0.03 --make-bed --out all_geno0.05_hwe1e06_maf0.005_ind
+
+d) Check sex concordance
+plink -bfile all_geno0.05_hwe1e06_maf0.005_ind --check-sex
+
+e) Calculate relatedness by IBD (and plot)
+plink --bfile all_geno0.05_hwe1e06_maf0.005_ind --genome --make-bed --out all_geno0.05_hwe1e06_maf0.005_ind_IBD
+
+f) Plot IBD (run the plot-IBD.R script)
+Rscript plot-IBD.R
+
+g) Select one sample per pair (with lower genotyping freq.) to remove (greater F_MISS value)
+Run in RStudio,
+
+install.packages("data.table")
+library("data.table")
+
+setwd ("/data/projects/endometriosis/qc_final")
+
+ind <- fread("PI_HAT_18.txt")
+geno <- fread("all.imiss")
+geno2 <- geno[geno$IID %in% ind$IID | geno$IID %in% ind$IID2,]
+remove_samples <- c("ENDOCONT173", "ENDO036")
+remove_samples_df <- data.frame("FID" = c(72, 69), remove_samples)
+
+write.table(remove_samples_df, "remove.txt", sep = "\t", quote = F, row.names = F, col.names = F)
+
+h) Remove samples from each pair
+plink --bfile all_geno0.05_hwe1e06_maf0.005_ind_IBD --remove remove.txt --make-bed --out all_clean
+
+i) Calculate 20 PCs for downstream association studies
+plink --bfile all_clean --indep-pairwise 50 5 0.2 --out all_clean_pca
+plink --bfile all_clean --extract all_clean_pca.prune.in --pca --out all_clean_pca_comp
+
+In RStudio, open the eigenvec file,
+pcs <- fread("all_clean_pca_comp.eigenvec")
+
+Note: We calculated 20 PCs, of which the first 5 will be used as covariates (gPCs) in the cis-mQTL mapping.
+
+
+-------------------------------------------------------------------------
+5. Pre-imputation check (McCarthy Group)
+a) Create the frequency file
+plink --bfile all_clean --freq --out all_clean
+
+b) Run the Will Rayner with HRC-1000G-check-bim.pl script
+perl /data/genotools/imputation/HRC-1000G-check-bim.pl --b all_clean.bim --f all_clean.frq -r /data/projects/salivaqtl/genotype/qc_final/1000G/1000GP_Phase3_combined.legend -g -p EUR -v
+
+Run-plink.sh
+sh Run-plink.sh
+
+c) Make and compress .vcf files per chromosome
+Run in terminal,
+
+for i in {1..23}; 
+do
+vcf-sort all_clean-updated-chr${i}.vcf | bgzip –c > $i.vcf.gz ;
+done
+
+
+-------------------------------------------------------------------------
+6. Impute using the Michigan Server
+a) Log in to the Michigan Imputation Server
+
+Select the following parameters,
+
+- Name: <Job name>Reference Panel: 1000G Phase 3 v5 (GRCh37/hg19)
+- Input Files (VCF): Upload here all the compressed .vcf files
+- Array Build: GRCh37/hg19
+- rsq Filter: 0.3
+- Phasing: Eagle v2.4 (phased output)
+- Population: EUR
+- Mode: Quality Control & Imputation
+
+(Submit Job)
+
+b) Download the imputation results and the Log files
+
+Run in terminal,
+
+curl -sL https://imputationserver.sph.umich.edu/get/3445394/1d66cf05b962c8fa9f477f42f1727ea714c00dbe3ff34bb36e59d5b5b0b2b959 | bash
+
+QC statistics
+curl -sL https://imputationserver.sph.umich.edu/get/3445398/c6c2003d13b63f7d27dc2aa1aba81da6db1d8df13b9b7bff26276d72b76b87b1 | bash
+
+Imputation results
+curl -sL https://imputationserver.sph.umich.edu/get/3445400/cedc18570e9bf3bb81c23f593aa5dadfc06fe33176b42f119c5afc6b2e71bf17 | bash
+
+Logs
+curl -sL https://imputationserver.sph.umich.edu/get/3445401/b0eda014fc786c0ad4ba1fa3186428854d609f5f16c77d56efc437052cbef996 | bash
+
+
+-------------------------------------------------------------------------
+7. Post imputation QC
+a) Unzip imputed files
+
+Run in terminal, 
+I) Unzip chromosomes (1 to 22)
+for i in {1..22};
+do
+unzip -P 'ZgOBzY<rU4k65n' chr_${i}.zip;
+done
+
+II) Unzip X chromosome
+unzip -P 'ZgOBzY<rU4k65n' chr_X.zip
+
+b) Concatenate the imputed files
+I) Create temporal files
+for i in {1..22};
+do
+echo chr${i}.dose.vcf.gz >>  tmp-concat.txt
+done
+
+echo  chrX.dose.vcf.gz >>  tmp-concat.txt
+
+II) Concatenate files
+bcftools concat -f tmp -concat.txt \
+> --threads 4 \
+> -o all_chr_imputed_206_samples_raw.vcf.gz \
+> -Oz
+
+c) Filter SNPs by rsq09
+Run in terminal, 
+bcftools filter –I ‘R2>0.9’ –o all_chr_imputed_206_samples_rsq09.vcf –Ov all_chr_imputed_206_samples_raw.cvf.gz
+
+d) Filter by MAF 0.01 and HWE 0.05
+plink --vcf all_chr_imputed_206_samples_rsq09.vcf --maf 0.01 --hwe 0.05 --keep-allele-order --make-bed --out all_chr_imputed_206_samples_rsq09_maf001_hwe005
+
+e) Remove sexual and mitochondrial chromosomes
+plink --bfile all_chr_imputed_206_samples_rsq09_maf001_hwe005 --chr 1-22 --keep-allele-order --make-bed --out imputed_206_samples_rsq09_maf001_hwe005_chr1-22
+
+f) Sort genotype data
+I) Generate .bed, .bim, and .fam temporary files
+cp imputed_206_samples_rsq09_maf001_hwe005_chr1-22.bed imputed_206_samples_rsq09_maf001_hwe005_chr1-22_temp.bed
+cp imputed_206_samples_rsq09_maf001_hwe005_chr1-22.bim imputed_206_samples_rsq09_maf001_hwe005_chr1-22_temp.bim
+cp imputed_206_samples_rsq09_maf001_hwe005_chr1-22.bim imputed_206_samples_rsq09_maf001_hwe005_chr1-22_temp.fam
+
+g) Sort (--indv-sort natural)
+plink --bfile imputed_206_samples_rsq09_maf001_hwe005_chr1-22_temp --indiv-sort natural --make-bed --keep-allele-order --out imputed_206_samples_rsq09_maf001_hwe005_chr1-22_sorted
+
+h) Remove multi-allelic SNPs
+plink --bfile imputed_206_samples_rsq09_maf001_hwe005_chr1-22_sorted --exclude /data/projects/inma_hrc_imputation/scripts/hrc_multiallelic.txt --make-bed --keep-allele-order --out imputed_206_samples_rsq09_maf001_hwe005_chr1-22_sorted_wo_multiallelic         
+
+-------------------------------------------------------------------------
+5426858 variants and 206 people pass filters and QC.
+-------------------------------------------------------------------------
