@@ -1,0 +1,1026 @@
+##### DNAm Quality Control
+
+### STEPS:
+### 1) Load data
+### 2) Probes and samples filtering
+### 3) BMIQ normalization
+### 4) Probes filtering
+### 5) Batch effect correction with ComBat
+### 6) Winsorization
+### 7) Rank-based inverse transformation (RNT)
+
+#-------------------------------------------------------------------------------
+# Set working directory
+setwd("/data/projects/endometriosis/meth_QC_oct24/new_2")
+
+#-------------------------------------------------------------------------------
+# Load the required libraries
+library(tidyverse)
+library(sesame)
+library(impute)
+library(ChAMP)
+library(stringr)
+library(sva)
+library(ggplot2)
+library(patchwork)
+
+# sesame_checkVersion()
+# sesameDataCache()
+
+#-------------------------------------------------------------------------------
+# Load data
+
+# Load sample that passed genotyping QC
+geno_samples <- read.table("/data/projects/endometriosis/mqtl_final/keep_met159.txt", header = FALSE)
+geno_samples <- geno_samples$V2
+
+# --- Load Batch 1 (EPICv1) ----
+idat_dir_1 <- "/data/projects/endometriosis/meth_QC/MET2022-363-014/idats"
+# betas_1 <-  openSesame(idat_dir_1, func = getBetas, prep = "QCDPB", mask = FALSE)
+# pvals_1 <- openSesame(idat_dir_1, func = pOOBAH, prep = "QCDPB", return.pval = TRUE)
+
+# saveRDS(betas_1, "../results_2/objects/betas_1.rds")
+# saveRDS(pvals_1, "../results_2/objects/pvals_1.rds")
+
+betas_1 <- readRDS("/data/projects/met_endo/results_2/objects/betas_1.rds")
+pvals_1 <- readRDS("/data/projects/met_endo/results_2/objects/pvals_1.rds")
+
+pheno_1 <- read.csv("/data/projects/endometriosis/meth_QC/MET2022-363-014/idats/MET2022-363-014_formatted.csv")
+pheno_1$samplename2 <- paste0(pheno_1$Sentrix_ID, "_", pheno_1$Sentrix_Position)
+colnames(betas_1) <- pheno_1[match(colnames(betas_1), pheno_1$samplename2), "Sample_Name"]
+colnames(pvals_1) <- pheno_1[match(colnames(pvals_1), pheno_1$samplename2), "Sample_Name"]
+
+dim(betas_1)    #866553 104
+dim(pvals_1)    #866553 104
+
+# Remove probes with failed samples (detp > 0.05) in more than 10% samples
+failed_samples_by_probe <- rowSums(pvals_1 > 0.05 | is.na(pvals_1))
+rm_probes <- 0.1 * ncol(pvals_1)
+
+probes_rmed <- failed_samples_by_probe[failed_samples_by_probe > rm_probes]
+length(probes_rmed)   # 92,888 probes removed
+
+write.table(x = as.data.frame(probes_rmed),
+            file = "/data/projects/endometriosis/meth_QC_oct24/new_2/results/probes_rmed.txt",
+            col.names = FALSE, quote = F, sep = "\t")
+
+pvals_1 <- pvals_1[!(rownames(betas_1) %in% names(probes_rmed)), ]
+
+
+# Remove samples with failed probes (detp > 0.05) in more than 1% probes
+failed_probes_by_sample <- colSums(pvals_1 > 0.05 | is.na(pvals_1))
+rm_samples <- 0.01 * nrow(pvals_1)
+
+samples_rmed <- failed_probes_by_sample[failed_probes_by_sample > rm_samples]
+length(samples_rmed)  # 11 samples removed
+
+write.table(x = as.data.frame(samples_rmed),
+            file = "/data/projects/endometriosis/meth_QC_oct24/new_2/results/samples_rmed.txt",
+            col.names = FALSE, quote = F, sep = "\t")
+
+# Subset beta matrix & pheno
+betas_1 <- betas_1[!(rownames(betas_1) %in% names(probes_rmed)), !(colnames(betas_1) %in% names(samples_rmed))]
+pheno_1 <- pheno_1[pheno_1$Sample_Name %in% colnames(betas_1), ]
+
+# Impute NA values from beta matrix
+# betas_imp_1 <- impute.knn(data = betas_1, k = 10, rng.seed = 1234)
+# betas_imp_1_data <- betas_imp_1$data
+
+# Save object after manual filters
+#saveRDS(betas_1, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_1.rds")
+betas_1 <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_1.rds")
+
+dim(betas_1)  #773665   93
+min(betas_1)  #0.004724732
+max(betas_1)  #0.9960426
+
+# EPICv1 density plot before bmiq ----------------------------------------------
+betas_1_df <- as.data.frame(betas_1)
+betas_1_melt <- reshape2::melt(betas_1_df)
+
+#pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/dp_epicv1_batch.pdf", width = 7, height = 4)
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/dp_epicv1_batch.png", width = 2*1080, height = 1*1080, res = 300)
+
+dens_betas_1 <- ggplot(betas_1_melt, aes(x = value, group = variable)) +
+  geom_density(alpha = .2) +
+  labs(title = "Batch 1 (EPICv1)") +
+  theme_bw()
+
+dens_betas_1
+
+dev.off()
+
+# --- Load Batch 2 (EPICv2) ----
+idat_dir_2 <- "/data/rawdata/EPIC2023-399/idats"
+# betas_2 <-  openSesame(idat_dir_2, func = getBetas, prep = "QCDPB", mask = FALSE)
+# pvals_2 <- openSesame(idat_dir_2, func = pOOBAH, prep = "QCDPB", return.pval = TRUE)
+# 
+# saveRDS(betas_2, "../results_2/objects/betas_2.rds")
+# saveRDS(pvals_2, "../results_2/objects/pvals_2.rds")
+
+betas_2 <- readRDS("/data/projects/met_endo/results_2/objects/betas_2.rds")
+pvals_2 <- readRDS("/data/projects/met_endo/results_2/objects/pvals_2.rds")
+
+# Remove saliva samples
+pheno_2 <- read.csv("/data/rawdata/EPIC2023-399/idats/EPIC2023-399_formatted.csv")
+pheno_2$samplename2 <- paste0(pheno_2$Sentrix_ID, "_", pheno_2$Sentrix_Position)
+
+endocols <- pheno_2[!grepl("HD2", pheno_2$Sample_Name), "samplename2"]
+
+betas_2 <- betas_2[, endocols]
+pvals_2 <- pvals_2[, endocols]
+
+colnames(betas_2) <- pheno_2[match(colnames(betas_2), pheno_2$samplename2), "Sample_Name"]
+colnames(pvals_2) <- pheno_2[match(colnames(pvals_2), pheno_2$samplename2), "Sample_Name"]
+
+dim(betas_2)    #937690   58
+dim(pvals_2)    #937690   58
+
+# Remove probes with failed samples (detp > 0.05) in more than 10% samples
+failed_samples_by_probe_v2 <- rowSums(pvals_2 > 0.05 | is.na(pvals_2))
+rm_probes_v2 <- 0.1 * ncol(pvals_2)
+
+probes_rmed_v2 <- failed_samples_by_probe_v2[failed_samples_by_probe_v2 > rm_probes_v2]
+length(probes_rmed_v2)    # 62,640 probes removed
+
+write.table(x = as.data.frame(probes_rmed_v2),
+            file = "/data/projects/endometriosis/meth_QC_oct24/new_2/results/probes_rmed_v2.txt",
+            col.names = FALSE, quote = F, sep = "\t")
+
+pvals_2 <- pvals_2[!(rownames(betas_2) %in% names(probes_rmed_v2)), ]
+
+# Remove samples with failed probes (detp > 0.05) in more than 1% probes
+failed_probes_by_sample_v2 <- colSums(pvals_2 > 0.05 | is.na(pvals_2))
+rm_samples_v2 <- 0.01 * nrow(pvals_2)
+
+samples_rmed_v2 <- failed_probes_by_sample_v2[failed_probes_by_sample_v2 > rm_samples_v2]
+length(samples_rmed_v2)   # 5 samples removed
+
+write.table(x = as.data.frame(samples_rmed_v2),
+            file = "/data/projects/endometriosis/meth_QC_oct24/new_2/results/samples_rmed_v2.txt",
+            col.names = FALSE, quote = F, sep = "\t")
+
+# Subset beta matrix
+betas_2 <- betas_2[!(rownames(betas_2) %in% names(probes_rmed_v2)), !(colnames(betas_2) %in% names(samples_rmed_v2))]
+pheno_2 <- pheno_2[pheno_2$Sample_Name %in% colnames(betas_2), ]
+
+names_cpgs_betas_2 <- stringr::str_split_i(rownames(betas_2), "_", 1)
+betas_2 <- betas_2[!(duplicated(names_cpgs_betas_2)), ]
+rownames(betas_2) <- stringr::str_split_i(rownames(betas_2), "_", 1)
+
+betas_2_lifted <- mLiftOver(x = betas_2,
+                             target_platform = "EPIC",
+                             source_platform = "EPICv2")
+
+# Impute NA values from beta matrix
+betas_imp_2 <- impute.knn(data = betas_2_lifted, k = 10, rng.seed = 1234)
+betas_imp_2_data <- betas_imp_2$data
+
+# Save object after manual filters
+#saveRDS(betas_2, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_2.rds")
+betas_2 <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_2.rds")
+
+dim(betas_2)  #868,794   53
+min(betas_2)  #0.004052611
+max(betas_2)  #0.9962203
+
+# EPICv2 density plot before bmiq ----------------------------------------------
+betas_2_df <- as.data.frame(betas_2)
+betas_2_melt <- reshape2::melt(betas_2_df)
+
+#pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/dp_epicv2_batch.pdf", width = 7, height = 4)
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/dp_epicv2_batch.png", width = 2*1080, height = 1*1080, res = 300)
+
+dens_betas_2 <- ggplot(betas_2_melt, aes(x = value, group = variable)) +
+  geom_density(alpha = .2) +
+  labs(title = "Batch 2 (EPICv2)") +
+  theme_bw()
+
+dens_betas_2
+
+dev.off()
+
+#------------------------------------------------------------------------------
+# Calculate PCs before normalization
+
+# Read and prepare covariates
+covs <- read.table('/data/projects/endometriosis/meth_QC_oct24/new_2/20241103_CovAll_145.txt', header = T)
+
+# Clean formatting
+covs <- t(covs)
+colnames(covs) <- covs[1, ]
+covs <- covs[-1 ,]
+covs <- as.data.frame(covs)
+covs$sample <- rownames(covs)
+rownames(covs) <- NULL
+
+dim(covs)   #145  5
+
+covs$Group <- as.factor(covs$Group)
+covs$Batch <- as.factor(covs$Batch)
+covs$Age <- as.numeric(covs$Age)
+covs$Cycle <- as.factor(covs$Cycle)
+
+# EPICv1 ----------------------------------------------------------------------
+# Merge betas and covariates in a single data.frame to calculate residuals
+
+covs_betas_1 <- merge(covs, t(betas_1), by.x = "sample", by.y = "row.names", sort = F)
+
+dim(covs_betas_1) #93773670
+
+# Use only 20 CpGs for residuals calculation
+set.seed(1234)
+cpg_names <- sample(rownames(betas_1), 20)
+
+covs_betas_1_sub <- covs_betas_1[, c(colnames(covs), cpg_names)]
+
+lm_residuals_cpgs <- function(cpg_name, mydata) {
+    
+    form <- paste0(cpg_name, "~ Age + Cycle" )
+    fit <- lm(form, data = mydata)
+    
+    res <- fit$residuals
+    res <- as.matrix(res)
+    colnames(res) <- cpg_name
+    
+    return(res)
+    
+}
+
+
+list_residuals_1 <- purrr::map(cpg_names, lm_residuals_cpgs, mydata = covs_betas_1_sub, .progress = TRUE)
+residuals_1 <- bind_cols(list_residuals_1)
+
+# Perform PCA on the residuals 
+pca_1 <- prcomp((na.omit(residuals_1)))
+colnames(pca_1$x) <- paste("m", colnames(pca_1$x), sep = "")
+
+# Get variance explained per PC 
+prop_1 <- pca_1$sdev^2 / sum(pca_1$sdev^2) * 100
+cumprop_1 <- cumsum(pca_1$sdev^2) / sum(pca_1$sdev^2) * 100
+pcn_1 <- paste("mPC", 1:length(prop_1), sep = "")
+pc_1 <- data.frame(pcn_1, prop_1, cumprop_1)
+
+# Select PCs explaining 80% of the accumulative variance 
+pc_1 <- pc_1[cumprop_1 <= 80, ]
+
+pca_1x <- pca_1$x
+pca_1x <- as.data.frame(pca_1x)
+pca_1x <- cbind("sample" = covs_betas_1$sample, pca_1x)
+write_tsv(pca_1x, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/residualized_mPCs_betas_1.tsv")
+
+#Save object
+#saveRDS(pca_1x, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pca_1x.rds")
+pca_1x <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pca_1x.rds")
+
+# Prepare transposed
+pca_1x_t <- t(pca_1x) %>% as.data.frame()
+write_tsv(pca_1x_t, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/residualized_mPCs_betas_1.transposed.tsv")
+
+# EPICv2 ----------------------------------------------------------------------
+# Merge betas and covariates in a single data.frame to calculate residuals
+
+covs_betas_2 <- merge(covs, t(betas_2), by.x = "sample", by.y = "row.names", sort = F)
+dim(covs_betas_2) #52 868,799
+
+# Use only 20 CpGs for residuals calculation
+set.seed(1234)
+cpg_names_2 <- sample(rownames(betas_2), 20)
+
+covs_betas_2_sub <- covs_betas_2[, c(colnames(covs), cpg_names_2)]
+
+
+list_residuals_2 <- purrr::map(cpg_names_2, lm_residuals_cpgs, mydata = covs_betas_2_sub, .progress = TRUE)
+residuals_2 <- bind_cols(list_residuals_2)
+
+# Perform PCA on the residuals 
+pca_2 <- prcomp((na.omit(residuals_2)))
+colnames(pca_2$x) <- paste("m", colnames(pca_2$x), sep = "")
+
+# Get variance explained per PC 
+prop_2 <- pca_2$sdev^2 / sum(pca_2$sdev^2) * 100
+cumprop_2 <- cumsum(pca_2$sdev^2) / sum(pca_2$sdev^2) * 100
+pcn_2 <- paste("mPC", 1:length(prop_2), sep = "")
+pc_2 <- data.frame(pcn_2, prop_2, cumprop_2)
+
+# Select PCs explaining 80% of the accumulative variance 
+pc_2 <- pc_2[cumprop_2 <= 80, ]
+
+pca_2x <- pca_2$x
+pca_2x <- as.data.frame(pca_2x)
+pca_2x <- cbind("sample" = covs_betas_2$sample, pca_2x)
+write_tsv(pca_2x, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/residualized_mPCs_betas_2.tsv")
+
+#Save object
+#saveRDS(pca_2x, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pca_2x.rds")
+pca_2x <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pca_2x.rds")
+
+
+# Prepare transposed
+pca_2x_t <- t(pca_2x) %>% as.data.frame()
+write_tsv(pca_2x_t, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/residualized_mPCs_betas_2.transposed.tsv")
+
+
+# PCA plots -------------------------------------------------------------------
+
+# Batch 1 ---------------------------------------------------------------------
+pca1xcovs <- merge(pca_1x, covs, by = "sample", sort = F)
+# pca1melt <- reshape2::melt(pca1xcovs, id.vars = c("sample", "Group", "Batch", "Age", "Cycle"))
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/pca_betas_1.pdf", height = 4, width = 13, onefile = TRUE)
+
+b1_pc1_pc2_group <- ggplot(pca1xcovs, aes(x = mPC1, y = mPC2, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc1_pc3_group <- ggplot(pca1xcovs, aes(x = mPC1, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc2_pc3_group <- ggplot(pca1xcovs, aes(x = mPC2, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc1_pc2_group + b1_pc1_pc3_group + b1_pc2_pc3_group + plot_layout(guides = "collect")
+
+
+b1_pc1_pc2_age <- ggplot(pca1xcovs, aes(x = mPC1, y = mPC2, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc1_pc3_age <- ggplot(pca1xcovs, aes(x = mPC1, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc2_pc3_age <- ggplot(pca1xcovs, aes(x = mPC2, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc1_pc2_age + b1_pc1_pc3_age + b1_pc2_pc3_age + plot_layout(guides = "collect")
+
+
+b1_pc1_pc2_cycle <- ggplot(pca1xcovs, aes(x = mPC1, y = mPC2, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc1_pc3_cycle <- ggplot(pca1xcovs, aes(x = mPC1, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc2_pc3_cycle <- ggplot(pca1xcovs, aes(x = mPC2, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+b1_pc1_pc2_cycle + b1_pc1_pc3_cycle + b1_pc2_pc3_cycle + plot_layout(guides = "collect")
+
+dev.off()
+
+# Batch 2 ---------------------------------------------------------------------
+pca2xcovs <- merge(pca_2x, covs, by = "sample", sort = F)
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/pca_betas_2.pdf", height = 4, width = 13, onefile = TRUE)
+
+b2_pc1_pc2_group <- ggplot(pca2xcovs, aes(x = mPC1, y = mPC2, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc1_pc3_group <- ggplot(pca2xcovs, aes(x = mPC1, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc2_pc3_group <- ggplot(pca2xcovs, aes(x = mPC2, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc1_pc2_group + b2_pc1_pc3_group + b2_pc2_pc3_group + plot_layout(guides = "collect")
+
+
+b2_pc1_pc2_age <- ggplot(pca2xcovs, aes(x = mPC1, y = mPC2, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc1_pc3_age <- ggplot(pca2xcovs, aes(x = mPC1, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc2_pc3_age <- ggplot(pca2xcovs, aes(x = mPC2, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc1_pc2_age + b2_pc1_pc3_age + b2_pc2_pc3_age + plot_layout(guides = "collect")
+
+
+b2_pc1_pc2_cycle <- ggplot(pca2xcovs, aes(x = mPC1, y = mPC2, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc1_pc3_cycle <- ggplot(pca2xcovs, aes(x = mPC1, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc2_pc3_cycle <- ggplot(pca2xcovs, aes(x = mPC2, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+b2_pc1_pc2_cycle + b2_pc1_pc3_cycle + b2_pc2_pc3_cycle + plot_layout(guides = "collect")
+
+dev.off()
+
+
+#------------------------------------------------------------------------------
+# Calculate PCs from merged betas before normalization
+
+betas_m <- merge(betas_1, betas_2, by = 0, sort = F)
+rownames(betas_m) <- betas_m$Row.names
+betas_m <- betas_m[, -1]
+
+# Merge betas and covariates in a single data.frame to calculate residuals
+
+covs_betas_m <- merge(covs, t(betas_m), by.x = "sample", by.y = "row.names", sort = F)
+dim(covs_betas_m)   #145    642,011
+
+# Use only 20 CpGs for residuals calculation
+set.seed(1234)
+cpg_names_m <- sample(rownames(betas_m), 20)
+
+covs_betas_m_sub <- covs_betas_m[, c(colnames(covs), cpg_names_m)]
+
+list_residuals_m <- purrr::map(cpg_names_m, lm_residuals_cpgs, mydata = covs_betas_m_sub, .progress = TRUE)
+residuals_m <- bind_cols(list_residuals_m)
+
+# Perform PCA on the residuals 
+pca_m <- prcomp((na.omit(residuals_m)))
+colnames(pca_m$x) <- paste("m", colnames(pca_m$x), sep = "")
+
+# Get variance explained per PC 
+prop_m <- pca_m$sdev^2 / sum(pca_m$sdev^2) * 100
+cumprop_m <- cumsum(pca_m$sdev^2) / sum(pca_m$sdev^2) * 100
+pcn_m <- paste("mPC", 1:length(prop_m), sep = "")
+pc_m <- data.frame(pcn_m, prop_m, cumprop_m)
+
+# Select PCs explaining 80% of the accumulative variance 
+pc_m <- pc_m[cumprop_m <= 80, ]
+
+pca_mx <- pca_m$x
+pca_mx <- as.data.frame(pca_mx)
+pca_mx <- cbind("sample" = covs_betas_m$sample, pca_mx)
+write_tsv(pca_mx, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/residualized_mPCs_betas_m.tsv")
+
+#Save object
+#saveRDS(pca_mx, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pca_mx.rds")
+pca_mx <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pca_mx.rds")
+
+# Prepare transposed
+pca_mx_t <- t(pca_mx) %>% as.data.frame()
+write_tsv(pca_mx_t, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/residualized_mPCs_betas_m.transposed.tsv")
+
+# Both datasets merged
+pcamxcovs <- merge(pca_mx, covs, by = "sample", sort = F)
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_before/pca_betas_m.pdf", height = 4, width = 13, onefile = TRUE)
+
+bm_pc1_pc2_group <- ggplot(pcamxcovs, aes(x = mPC1, y = mPC2, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc1_pc3_group <- ggplot(pcamxcovs, aes(x = mPC1, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc2_pc3_group <- ggplot(pcamxcovs, aes(x = mPC2, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc1_pc2_group + bm_pc1_pc3_group + bm_pc2_pc3_group + plot_layout(guides = "collect")
+
+
+bm_pc1_pc2_age <- ggplot(pcamxcovs, aes(x = mPC1, y = mPC2, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc1_pc3_age <- ggplot(pcamxcovs, aes(x = mPC1, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc2_pc3_age <- ggplot(pcamxcovs, aes(x = mPC2, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc1_pc2_age + bm_pc1_pc3_age + bm_pc2_pc3_age + plot_layout(guides = "collect")
+
+
+bm_pc1_pc2_cycle <- ggplot(pcamxcovs, aes(x = mPC1, y = mPC2, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc1_pc3_cycle <- ggplot(pcamxcovs, aes(x = mPC1, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc2_pc3_cycle <- ggplot(pcamxcovs, aes(x = mPC2, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+bm_pc1_pc2_cycle + bm_pc1_pc3_cycle + bm_pc2_pc3_cycle + plot_layout(guides = "collect")
+
+dev.off()
+
+#------------------------------------------------------------------------------
+# BMIQ
+
+# EPICv1 ----------------------------------------------------------------------
+betas_bmiq_1 <- champ.norm(beta = betas_1,
+                           resultsDir = "/data/projects/endometriosis/meth_QC_oct24/new_2/results/bmiq/champnorm_betas_bmiq_1",
+                           method = "BMIQ",
+                           plotBMIQ = TRUE,
+                           arraytype = "EPIC",
+                           cores = 16)
+
+# Save object after bmiq normalization
+#saveRDS(betas_bmiq_1, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_bmiq_1.rds")
+betas_bmiq_1 <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_bmiq_1.rds")
+
+dim(betas_bmiq_1)   #773665     93
+min(betas_bmiq_1)   #0.001821055
+max(betas_bmiq_1)   #0.999783
+
+# EPICv1 density plot after BMIQ -----------------------------------------------
+
+betas_bmiq_1_df <- as.data.frame(betas_bmiq_1)
+betas_bmiq_1_melt <- reshape2::melt(betas_bmiq_1_df)
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/dp_epicv1_batch_bmiq.pdf", width = 7, height = 4)
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/dp_epicv1_batch_bmiq.png", width = 2*1080, height = 1*1080, res = 300)
+
+dens_betas_bmiq_1 <- ggplot(betas_bmiq_1_melt, aes(x = value, group = variable)) +
+  geom_density(alpha = .2) +
+  labs(title = "Batch 1 (EPICv1)-BMIQ") +
+  theme_bw()
+
+dens_betas_bmiq_1
+
+dev.off()
+
+# EPICv2 ----------------------------------------------------------------------
+betas_bmiq_2 <- champ.norm(beta = betas_2,
+                           resultsDir = "/data/projects/endometriosis/meth_QC_oct24/new_2/results/bmiq/champnorm_betas_bmiq_2",
+                           method = "BMIQ",
+                           plotBMIQ = TRUE,
+                           arraytype = "EPIC",
+                           cores = 16)
+
+# Save object after bmiq normalization
+#saveRDS(betas_bmiq_2, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_bmiq_2.rds")
+betas_bmiq_2 <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_bmiq_2.rds")
+
+dim(betas_bmiq_2)   #868794     53
+min(betas_bmiq_2)   #0.001130185
+max(betas_bmiq_2)   #0.9995626
+
+# EPICv2 density plot after BMIQ -----------------------------------------------
+
+betas_bmiq_2_df <- as.data.frame(betas_bmiq_2)
+betas_bmiq_2_melt <- reshape2::melt(betas_bmiq_2_df)
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/dp_epicv2_batch_bmiq.pdf", width = 7, height = 4)
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/dp_epicv2_batch_bmiq.png", width = 2*1080, height = 1*1080, res = 300)
+
+dens_betas_bmiq_2 <- ggplot(betas_bmiq_2_melt, aes(x = value, group = variable)) +
+  geom_density(alpha = .2) +
+  labs(title = "Batch 2 (EPICv2)-BMIQ") +
+  theme_bw()
+
+dens_betas_bmiq_2
+
+dev.off()
+
+#-------------------------------------------------------------------------------
+# Merge EPICv1 and EPICv2 datasets ---------------------------------------------
+
+betas <- merge(betas_bmiq_1, betas_bmiq_2, by = 0, sort = F)
+rownames(betas) <- betas$Row.names
+betas <- betas[, -1]
+
+dim(betas)    #642006   146
+
+# Remove samples without a genotype (filtered at genotyping QC)
+betas <- betas[, colnames(betas) %in% geno_samples]
+
+pheno <- rbind(pheno_1, pheno_2)
+pheno <- pheno[match(colnames(betas), pheno$Sample_Name), ]
+
+betas <- as.matrix(betas)
+
+dim(betas)    #642006   145
+min(betas)    #0.001130185
+max(betas)    #0.999783
+
+# Save merged object after bmiq normalization
+#saveRDS(betas, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas.rds")
+betas <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas.rds")
+
+# Save pheno (merged pheno_1 and pheno_2)
+#saveRDS(pheno, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pheno.rds")
+pheno <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/pheno.rds")
+
+("/data/projects/endometriosis/qc_final/imputed_159_samples_rsq09_maf001_hwe005_chr1-22_sorted_wo_multiallelic")
+("/data/projects/endometriosis/meth_QC_oct24/new_2/results/betas_rnt_qced.bed")
+
+#-------------------------------------------------------------------------------
+# Density plot merged datasets after BMIQ normalization ------------------------
+
+betas_df <- as.data.frame(betas)
+betas_melt <- reshape2::melt(betas_df)
+
+#pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/dp_epicv1_v2_batch_bmiq.pdf", width = 7, height = 4)
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/dp_epicv1_v2_batch_bmiq.png", width = 2*1080, height = 1*1080, res = 300)
+
+dens_betas <- ggplot(betas_melt, aes(x = value, group = variable)) +
+  geom_density(alpha = .2) +
+  labs(title = "Merged (EPICv1_v2)-BMIQ") +
+  theme_bw()
+
+dens_betas
+
+dev.off()
+
+#-------------------------------------------------------------------------------
+# Probes filters ---------------------------------------------------------------
+
+# 1) Remove SNP-containing probes ----------------------------------------------
+myprobes <- rownames(betas)
+
+rmch <- myprobes[str_starts(myprobes, "ch")]
+length(rmch) # 1775
+
+rmrs <- myprobes[str_starts(myprobes, "rs")]
+length(rmrs) # 49
+
+betas <- betas[!(rownames(betas) %in% rmch), ]
+betas <- betas[!(rownames(betas) %in% rmrs), ]
+
+dim(betas)    #640182   145
+
+# 2) Remove probes within the X chromosome -------------------------------------   
+epic_mani <- read.csv("/data/resources/dna_met/manifests/infinium-methylationepic-v-1-0-b5-manifest-file.csv", skip = 7)
+cpgs_xy <- epic_mani[epic_mani$CHR == "X" | epic_mani$CHR == "Y", "Name"]
+
+table(rownames(betas) %in% cpgs_xy) # 13489
+betas <- betas[!rownames(betas) %in% cpgs_xy, ]
+
+# 3) Remove probes not-specific to the European population ---------------------
+data("EPIC.manifest.pop.hg19")
+
+# Prepare filter
+colname_of_interest <- paste("MASK_general_", "EUR", sep = "")
+manifest_filter <- which(EPIC.manifest.pop.hg19[, colname_of_interest]) == TRUE
+maskname <- rownames(EPIC.manifest.pop.hg19)[manifest_filter]
+
+# Apply filter
+table(rownames(betas) %in% maskname) # 7
+betas <- betas[!rownames(betas) %in% maskname, ]
+dim(betas)    #626276   145
+
+# 4) Remove multi-hit CpG probes -----------------------------------------------
+
+data("multi.hit")
+
+table(rownames(betas) %in% multi.hit$TargetID) # 14
+betas <- betas[!(rownames(betas) %in% multi.hit$TargetID), ]
+dim(betas)    #626262    145
+
+#### Final probes: 626,262
+
+#-------------------------------------------------------------------------------
+# Batch effect correction with ComBat ------------------------------------------
+
+# Bind pheno & make batch variable
+pheno_1$Sentrix_ID <- as.character(pheno_1$Sentrix_ID)
+pheno_1$batch <- "B1"
+pheno_2$Sentrix_ID <- as.character(pheno_2$Sentrix_ID)
+pheno_2$batch <- "B2"
+
+pheno <- rbind(pheno_1, pheno_2)
+
+# Match with beta matrix
+pheno <- pheno[match(colnames(betas), pheno$Sample_Name), ]
+table(pheno$Sample_Name == colnames(betas))   #145
+
+# Calculate the variance of each probe and remove any with a variance of 0 before ComBat
+mval <- apply(betas, 2, function(x) log2((x)/(1 - x)))
+
+min(mval) # -9.787594
+max(mval) # 12.16973
+
+vars <- as.matrix(rowVars(mval))
+
+# Replace all probes with no variance with NA and remove them from the FunNorm set
+vars[vars == 0] <- NA
+vars <- na.omit(vars)
+intersectingCpGs <- intersect(rownames(vars), rownames(mval))
+cat(nrow(mval) - length(intersectingCpGs), "probes had no variance and were removed", "\n")
+# 0 probes had no variance and were removed
+
+fn_sub <- betas[intersectingCpGs, ]
+mval <- mval[intersectingCpGs, ]
+
+dim(mval)   #626262   145
+
+# Create a model matrix for the adjustment variables (required by ComBat function)
+model_combat <-  model.matrix(~ 1, data = pheno)
+
+# Apply ComBat function
+combat_1 <-  ComBat(dat = mval,
+                    batch = pheno$Sentrix_ID,
+                    mod = model_combat,
+                    par.prior = TRUE,
+                    prior.plots = FALSE)
+
+combat_2 <-  ComBat(dat = mval,
+                     batch = pheno$batch,
+                     mod = model_combat,
+                    par.prior = TRUE,
+                   prior.plots = FALSE)
+
+# Transform mvals to beta values after ComBat
+
+#Merged datasets - Combat (Sentrix-ID)
+expit2 <- function(x) 2^x / (1 + 2^x)
+
+betafinal <- expit2(combat_1)
+
+dim(betafinal) #  626262    145
+min(betafinal) #  0.003297728
+max(betafinal) #  0.9987865
+
+# Save object after Combat - SentrixID
+#saveRDS(betafinal, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_final.rds")
+betas_final <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas.rds")
+
+#Merged datasets - Combat (Batch)
+expit2_b <- function(x) 2^x / (1 + 2^x)
+
+betafinal_b <- expit2(combat_2)
+
+dim(betafinal_b)  
+min(betafinal_b) # 0.001858887
+max(betafinal_b) # 0.9995708
+
+# Save object after champ - Batch
+#saveRDS(betafinal_b, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_final_batch.rds")
+betafinal_b <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/betas_final_batch.rds")
+
+# Density plot merged datasets after Combat - Batch
+betafinal_b_df <- as.data.frame(betafinal_b)
+betafinal_b_melt <- reshape2::melt(betafinal_b_df)
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/dp_epicv1_v2_batch_bmiq_batch.pdf", width = 7, height = 4)
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/dp_epicv1_v2_batch_bmiq_batch.png", width = 2*1080, height = 1*1080, res = 300)
+
+dens_betafinal_b <- ggplot(betafinal_b_melt, aes(x = value, group = variable)) +
+  geom_density(alpha = .2) +
+  labs(title = "Merged (EPICv1_v2)-BMIQ-Batch") +
+  theme_bw()
+
+dens_betafinal_b
+
+dev.off()
+
+#-------------------------------------------------------------------------------
+# Reduce extreme methylation values through Winsorization ----------------------
+
+# Prepare function
+winsorize <- function(methylation, pct) {
+    
+    stopifnot(is.matrix(methylation))
+    
+    if (nrow(methylation) < ncol(methylation)) {
+        
+        warning("Expecting CpG probes as rows (long dataset)")
+        
+    }
+    
+    quantiles <- matrixStats::rowQuantiles(methylation,
+                                           probs = c(pct, 1 - pct),
+                                           na.rm = T)
+    low <- quantiles[, 1]
+    upper <- quantiles[, 2]
+    
+    outliers.lower <- rowSums(methylation < low, na.rm = T)
+    outliers.upper <- rowSums(methylation > upper, na.rm = T)
+    
+    idx <- which(methylation < low, arr.ind = T)
+    methylation[idx] <- low[idx[, 1]]
+    
+    idx <- which(methylation > upper, arr.ind = T)
+    methylation[idx] <- upper[idx[, 1]]
+    
+    n <- rowSums(!is.na(methylation))
+    log <- data.frame(outliers.lower, outliers.upper, n)
+    
+    return(list(methylation = methylation, log = log))
+    
+}
+
+
+# Apply winsorization
+replace_outliers <- winsorize(betafinal, 0.005)
+wins_res <- as.matrix(replace_outliers$methylation)
+
+min(wins_res)     #0.003667701
+max(wins_res)     #0.9980506
+
+# Save winsorization log
+wins_log <- as.data.frame(replace_outliers$log)
+wins_log <- dplyr::as_tibble(wins_log, rownames = "cpg")
+readr::write_tsv(wins_log, "/data/projects/endometriosis/meth_QC_oct24/new_2/results/wins_log.tsv")
+
+# Save object after Winsorization
+#saveRDS(wins_res, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/wins_res.rds")
+wins_res <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/wins_res.rds")
+
+#-------------------------------------------------------------------------------
+# Apply Rank-based inverse transformation (RNT)
+
+rnt <- apply(wins_res, 1, RNOmni::RankNorm)
+
+dim(rnt)  #145 626262
+min(rnt)  #-2.627327
+max(rnt)  #2.627327
+
+# Save object after rnt
+#saveRDS(rnt, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/rnt.rds")
+rnt <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/rnt.rds")
+
+# Transpose rnt
+trnt <- t(rnt)
+
+dim(trnt) #626262   145
+min(trnt) # -2.627327
+max(trnt) # 2.627327
+
+# Save transposed rnt object after
+#saveRDS(trnt, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/trnt.rds")
+trnt <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/trnt.rds")
+
+# Plot CpG distributions of a random subset of 1000 probes
+set.seed(1234)
+rnt1k <- rnt[, sample(ncol(rnt), 1000)]
+
+png("/data/projects/endometriosis/meth_QC_oct24/new_2/plots/rnt_density_1k.png", res = 300, width = 480*4, height = 480*3)
+
+minfi::densityPlot(rnt1k)
+
+dev.off()
+
+#-------------------------------------------------------------------------------
+# Merge final beta matrix with probe data to match tensorQTL input format (BED format)
+
+cpg_info <- epic_mani[epic_mani$Name %in% rownames(trnt), ]
+cpg_info <- cpg_info[, c("CHR", "MAPINFO", "MAPINFO", "Name")]
+
+# Merge
+qced_betas <- merge(cpg_info, trnt, by.x = "Name", by.y = 0, sort = F)
+
+# Reorder columns (chr, start, end, ID, probes)
+qced_betas <- qced_betas[, c(2, 3, 4, 1, 5:ncol(qced_betas))]
+
+# Rename first 4 columns
+colnames(qced_betas)[1:4] <- c("#Chr", "start", "end", "ID")
+
+# Add +1 to end
+qced_betas$end <- qced_betas$end + 1
+
+#Save object
+#saveRDS(qced_betas, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/qced_betas.rds")
+qced_betas <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/qced_betas.rds")
+
+# Write results
+
+###Save betas
+
+out_1 <- as.data.frame(wins_res)
+out_1 <- out_1[, order(colnames(out_1))]
+out_1 <- dplyr::as_tibble(out_1, rownames = "CpG")
+
+#Save object
+#saveRDS(out_1, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/out_1.rds")
+#out_1 <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/out_1.rds")
+
+#Save the betas file
+readr::write_tsv(out_1, "/data/projects/endometriosis/meth_QC_oct24/new_2/results/betas_qced.bed.gz")
+
+###Save rnts
+out_2 <- as.data.frame(qced_betas)
+out_2 <- out_2[, c("ID", "#Chr", "start", "end", colnames(out_1)[-1])]
+out_2 <- dplyr::as_tibble(out_2) %>% 
+  dplyr::arrange(`#Chr`, start) %>% 
+  dplyr::relocate(ID, .after = 4)
+
+#Save object
+#saveRDS(out_2, "/data/projects/endometriosis/meth_QC_oct24/new_2/objects/out_2.rds")
+out_2 <- readRDS("/data/projects/endometriosis/meth_QC_oct24/new_2/objects/out_2.rds")
+
+
+#Save the rnts file
+readr::write_tsv(out_2, "/data/projects/endometriosis/meth_QC_oct24/new_2/results/betas_rnt_qced.bed.gz")
+
+# Save pheno
+
+pheno_out <- dplyr::as_tibble(pheno)
+readr::write_tsv(pheno_out, "/data/projects/endometriosis/meth_QC_oct24/new_2/results/pheno_betas_qced.tsv")
+
+
+#-------------------------------------------------------------------------------
+# Calculate PCs final betas (rnts) ---------------------------------------------
+
+betas_f <- qced_betas %>% 
+    select(-`#Chr`, -start, -end)
+
+rownames(betas_f) <- betas_f[["ID"]]
+betas_f <- betas_f[, -1]
+
+# Merge betas and covariates in a single data.frame to calculate residuals
+covs_betas_f <- merge(covs, t(betas_f), by.x = "sample", by.y = "row.names", sort = F)
+
+# Use only 20 CpGs for residuals calculation
+set.seed(1234)
+cpg_names_f <- sample(rownames(betas_f), 20)
+
+covs_betas_f_sub <- covs_betas_f[, c(colnames(covs), cpg_names_f)]
+
+list_residuals_f <- purrr::map(cpg_names_f, lm_residuals_cpgs, mydata = covs_betas_f_sub, .progress = TRUE)
+residuals_f <- bind_cols(list_residuals_f)
+
+# Perform PCA on the residuals 
+pca_f <- prcomp((na.omit(residuals_f)))
+colnames(pca_f$x) <- paste("m", colnames(pca_f$x), sep = "")
+
+# Get variance explained per PC 
+prop_f <- pca_f$sdev^2 / sum(pca_f$sdev^2) * 100
+cumprop_f <- cumsum(pca_f$sdev^2) / sum(pca_f$sdev^2) * 100
+pcn_f <- paste("mPC", 1:length(prop_f), sep = "")
+pc_f <- data.frame(pcn_f, prop_f, cumprop_f)
+
+# Select PCs explaining 80% of the accumulative variance 
+pc_f <- pc_f[cumprop_f <= 80, ]
+
+pca_fx <- pca_f$x
+pca_fx <- as.data.frame(pca_fx)
+pca_fx <- cbind("sample" = covs_betas_f$sample, pca_fx)
+write_tsv(pca_fx, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/residualized_mPCs_betas_rnt_f.tsv")
+
+# Prepare transposed
+pca_fx_t <- t(pca_fx) %>% as.data.frame()
+write_tsv(pca_fx_t, "/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/residualized_mPCs_betas_rnt_f.transposed.tsv")
+
+
+pcafxcovs <- merge(pca_fx, covs, by = "sample", sort = F)
+
+pdf("/data/projects/endometriosis/meth_QC_oct24/new_2/pca_after/pca_betas_rnts_f.pdf", height = 4, width = 13, onefile = TRUE)
+
+bf_pc1_pc2_group <- ggplot(pcafxcovs, aes(x = mPC1, y = mPC2, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc1_pc3_group <- ggplot(pcafxcovs, aes(x = mPC1, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc2_pc3_group <- ggplot(pcafxcovs, aes(x = mPC2, y = mPC3, color = Group)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc1_pc2_group + bf_pc1_pc3_group + bf_pc2_pc3_group + plot_layout(guides = "collect")
+
+
+bf_pc1_pc2_age <- ggplot(pcafxcovs, aes(x = mPC1, y = mPC2, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc1_pc3_age <- ggplot(pcafxcovs, aes(x = mPC1, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc2_pc3_age <- ggplot(pcafxcovs, aes(x = mPC2, y = mPC3, color = Age)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc1_pc2_age + bf_pc1_pc3_age + bf_pc2_pc3_age + plot_layout(guides = "collect")
+
+
+bf_pc1_pc2_cycle <- ggplot(pcafxcovs, aes(x = mPC1, y = mPC2, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc1_pc3_cycle <- ggplot(pcafxcovs, aes(x = mPC1, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc2_pc3_cycle <- ggplot(pcafxcovs, aes(x = mPC2, y = mPC3, color = Cycle)) +
+    geom_point() +
+    theme_bw()
+
+bf_pc1_pc2_cycle + bf_pc1_pc3_cycle + bf_pc2_pc3_cycle + plot_layout(guides = "collect")
+
+dev.off()
