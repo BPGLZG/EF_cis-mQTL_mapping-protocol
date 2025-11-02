@@ -1,0 +1,41 @@
+##### Manhattan plot - EWAS results
+
+# Set the working directory
+setwd("/data/projects/endometriosis/ewases/ewas_all/new/new_2025")
+
+# Load the required libraries
+library('qqman')
+library(data.table)
+
+manifest <- fread("/data/resources/dna_met/manifests/infinium-methylationepic-v-1-0-b5-manifest-file.csv", skip = 7, sep = ",")
+
+manifest <- manifest[, .(IlmnID, CHR, MAPINFO, UCSC_RefGene_Name, Strand)]
+new_strand <-  ifelse(manifest$Strand == "F", "+", "-")
+manifest[, Strand := new_strand]
+
+# Load results
+ewas <- fread("/data/projects/endometriosis/ewases/ewas_all/new/new_2025/mod_b_all_group_raw_ewas_3_covs_and_no_mPCs.txt")
+ewas$CpG <- gsub(pattern = "Response ", replacement = "", x = ewas$CpG)
+
+# Merge
+ewas <- merge(ewas, manifest, by.x = "CpG", by.y = "IlmnID", sort = F)
+
+ewas[CHR=="X", CHR:=23]
+ewas[CHR=="Y", CHR:=24]
+ewas[CHR=="MT", CHR:=25]
+
+ewas[ ,CHR:=as.numeric(CHR)]
+
+# Plot GCST90205183
+png('ewas_group_nompcs_manhattan_plot.png', width=960)
+
+manhattan(ewas,
+          chr = 'CHR',
+          bp = 'MAPINFO',
+          p = 'P_value',
+          snp = 'CpG',
+          col = c('gray10', 'gray60'),
+          suggestiveline = -log10(1e-04)
+)
+
+dev.off()

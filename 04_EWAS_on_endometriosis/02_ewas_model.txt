@@ -1,0 +1,152 @@
+#### EWAS - endometriosis group (case/control)
+#### All samples (total: 130 samples and 626262 CpGs)
+
+# EWAS model all_b: methylation ~ group + age + phase + batch ; no mPCs
+
+### Set working directory
+setwd("/data/projects/endometriosis/ewases/ewas_all/new/new_2025/")
+
+### Load required packages
+library(data.table)
+library(QCEWAS)
+#if (!require("qqman")) install.packages("qqman")
+library(qqman)
+
+# ------------------------------------------------------------------------------
+# EWAS model all_b: methylation ~ group + age + phase + batch ; no mPCs
+# ------------------------------------------------------------------------------
+
+# Load the rnt file with covariates
+#rnt <- fread("rnt_values_79_samples.txt")
+#dim(rnt)         # 79 rows (samples) ; 748,285 columns (CpGs)
+
+#rnt_cov <- fread("rnts_covs/group_all_model_rnt_values_132_samples_3_covs.txt", sep = "\t")
+rnt_cov <- fread("group_all_model_rnt_values_130_samples_4_covs.txt", sep = "\t")
+
+dim(rnt_cov)      # 130 rows (samples) ; 626267 columns (V1+ 626262 CpGs + 4 covariates)
+rnt_cov[1:5,1:5]
+tail(colnames(rnt_cov))   # "Age", "Group", "Phase", "Batch"
+
+# Load the residualized mPCs
+#pcs <- fread("data/hormone_unit_age_disease_group_batch_residualized_20mPCs.txt")
+#pcs <- fread("mpcs/group_all_mod_a_residualized_20mPCs_3covs.txt")   # Change here the mPCs calculated for each model
+pcs <- fread("group_all_mod_a_residualized_20mPCs_3covs.txt")
+
+dim(pcs)          # 130 rows (samples) ; 21 columns (mPCs)
+pcs[1:5,1:5]
+
+# Create a subset only with the CpGs
+subset_cpgs <- rnt_cov[, !c("Age", "Group", "Phase", "Batch"), with = FALSE]
+dim(subset_cpgs)  # 130 rows (samples) ; 626263 columns (V1 + 626262 CpGs)
+subset_cpgs[1:5,1:5]
+
+## rnt and the subset_cpgs are the same, I guess we could use either? ----------
+
+## Apply as.numeric to quantitative covariates ("Age")
+rnt_cov$Age = as.numeric(rnt_cov$Age)
+class(rnt_cov$Age)                      # numeric
+
+# Check that the methylation values in the subset_cpgs data.frame are numeric
+(sapply(rnt_cov[ ,c(1:6)], class))      # confirm that methylation values are "numeric"
+
+
+## Apply as.factor to categorical variables ("Group", "Phase" and "Batch")
+rnt_cov[ , c("Group", "Phase", "Batch")] <- lapply(rnt_cov[ , c("Group", "Phase", "Batch")], as.factor)
+class(rnt_cov$Group)                    # factor
+class(rnt_cov$Phase)                    # factor
+class(rnt_cov$Batch)                    # factor
+#class(rnt_cov$Unit)                    # factor
+#class(rnt_cov$Contraceptive)           # factor
+
+# Check the column order of both files
+table(rnt_cov$V1 == pcs$samples)        # 130 TRUE - the samples are in the same order in both files
+
+# Format both data.frames before merging
+rnt_cov[1:5,1:5]
+rownames(rnt_cov) <- rnt_cov$V1
+rnt_cov <- rnt_cov[, -1]        # remove the first column (V1)
+rnt_cov[1:5,1:5]
+
+pcs[1:5,1:5]
+rownames(pcs) <- pcs$samples
+pcs <- pcs[, -1]                # remove the first column (V1)
+pcs[1:5,1:5]
+
+# Merge both data.frames
+rnt_cov <- cbind(rnt_cov, pcs)
+dim(rnt_cov)                    # 130 rows (samples) ; 626286 columns (626262 CpGs + 4 covariates + 20 mPCs)
+
+# Remove V1 column from the subset_cpgs dataframe
+rownames(subset_cpgs) <- subset_cpgs$V1
+subset_cpgs <- subset_cpgs[, -1]
+dim(subset_cpgs)                # 130 rows (samples) ; 626262 columns (CpGs)
+
+#-------------------------------------------------------------------------------
+# EWAS model all_b: methylation ~ group + age + phase + batch ; no 20mPCs
+#-------------------------------------------------------------------------------
+# Perform the multiple linear model methylation ~ group + age + phase ; no mPCs
+fit_nompcs <- lm(as.matrix(subset_cpgs) ~ Group + Age + Phase + Batch, data = rnt_cov)
+
+sum_lm_nompcs <- summary(fit_nompcs)
+
+results_list_nompcs <- lapply(seq_along(names(sum_lm_nompcs)), function(index) {
+  # Obtener el nombre del CpG usando el índice
+  cpg_nompcs <- names(sum_lm_nompcs)[index]
+  
+  # Imprimir el número de iteración con cat()
+  cat("Processing CpG number:", index, "\n")
+  
+  # Extraer la tabla de coeficientes para cada CpG
+  coef_table_nompcs <- sum_lm_nompcs[[cpg_nompcs]]$coefficients
+  coef_table_nompcs <- coef_table_nompcs[rownames(coef_table_nompcs) == "Group2", ]
+  
+  # Convertir a data.frame y añadir el nombre del CpG como columna
+  coef_df_nompcs <- as.data.frame(t(coef_table_nompcs))
+  coef_df_nompcs$CpG <- cpg_nompcs
+  
+  # Devolver el dataframe
+  return(coef_df_nompcs)
+})
+
+# Combinar todos los resultados en un solo data.frame
+results_df_nompcs <- do.call(rbind, results_list_nompcs)
+
+# Renombrar las columnas para mayor claridad
+colnames(results_df_nompcs) <- c("Beta", "Standard_Error", "T_value", "P_value", "CpG")
+
+# Reordenar las columnas si prefieres tener el CpG primero
+results_df_nompcs <- results_df_nompcs[, c("CpG", "Beta", "Standard_Error", "T_value", "P_value")]
+
+fwrite(results_df_nompcs,
+       file = "mod_b_all_group_raw_ewas_3_covs_and_no_mPCs.txt", col.names = T,
+       row.names = F, quote = F, sep = "\t")
+
+#-------------------------------------------------------------------------------
+# Load results
+res <- fread("/data/projects/endometriosis/ewases/ewas_all/new/new_2025/mod_b_all_group_raw_ewas_3_covs_and_no_mPCs.txt")
+res$CpG <- gsub(pattern = "Response ", replacement = "", x = res$CpG)
+
+P_lambda(res$P_value)     # 2.076373
+
+# Bonferroni correction
+res$bon <- p.adjust(res$P_value, method = "bonferroni")
+res_filt_bonf <- res[res$bon < 0.05, ]
+dim(res_filt_bonf)        # 0
+
+# FDR correction
+res$fdr <- p.adjust(res$P_value, method = "fdr")
+res_filt_fdr <- res[res$fdr < 0.05, ]
+dim(res_filt_fdr)         # 0
+
+# Load beta values
+betas <- fread("/data/projects/endometriosis/meth_QC_oct24/new_2/results/betas_qced.bed.gz")
+
+# Q-Q plot
+qq(res$P_value, main = "Genomic Inflation Assessment (λ = 2.076373)", col = "#392F5A")
+qq(res$P_value, main = "Q-Q Plot", col = "#9DD9D2")
+qq(res$P_value, main = "Q-Q Plot", col = "#F4D06F")
+qq(res$P_value, main = "Genomic Inflation Assessment (λ = 2.076373)", col = "black")
+qq(res$P_value, main = "Genomic Inflation Assessment (λ = 2.076373)", col = "#808080")
+
+# Añadir una línea de referencia (y = x)
+abline(0, 1, col = "red", lwd = 2)

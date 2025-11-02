@@ -1,0 +1,250 @@
+#### Regressing out the covariates from the RNT values, and mPCs calculation
+#### All samples (total: 130 samples and 626,262 CpGs)
+
+### EWAS - endometriosis group (case/control)
+
+# EWAS model all_1: methylation ~ group + age + phase + batch + 20mPCs
+# EWAS model all_2: methylation ~ group + age + phase + batch ; no 20mPCs
+# EWAS model all_3: methylation ~ group ; no covs + 20mPCs
+# EWAS model all_4: methylation ~ group ; no covs ; no 20mPCs
+
+# ------------------------------------------------------------------------------
+### Set working directory
+setwd("/data/projects/endometriosis/ewases/ewas_all/new/new_2025")
+
+#-------------------------------------------------------------------------------
+# Load the required packages
+#install.packages("tidyverse")
+
+# Load the required libraries
+library(data.table)
+library(tidyverse)          
+#library(stringr)            
+#library(readr)
+
+#-------------------------------------------------------------------------------
+### Load the rnt transformed values
+rnts <- fread("/data/projects/endometriosis/meth_QC_oct24/new_2/results/betas_rnt_qced.bed")
+
+dim(rnts)                    # 626262 rows (CpGs) ; 149 columns (145 samples + "#Chr", "start", "end", "ID")
+rnts[1:5,1:5]
+
+## Transform the BED file to a data.frame with columns as samples and rows as CpGs
+cpgs <- rnts$ID              # get a vector with the CpGs' ID
+
+rnts <- rnts[ ,-c(1:4)]      # remove the "Chr", "start", "end", "ID" columns
+dim(rnts)                    # 626262 rows (CpGs) ; 145 columns (samples)
+rnts[1:5,1:5]
+
+rnts <- as.data.frame(rnts)  # convert the BED file to a data.frame
+
+rownames(rnts) <- cpgs       # set the rownames as the saved CpGs' IDs
+dim(rnts)                    # 626262 rows (CpGs) ; 145 columns (samples)
+rnts[1:5,1:5]
+
+### Load the covariates file
+#covs <- fread("../../20241115_CovsAll_159.txt")
+
+covs <- fread("/data/projects/endometriosis/tensorQTL_final/final_20250210/data/covs_130_tensor.txt")
+dim(covs)                    # 4 rows (covariates) ; 131 columns (samples + cov ID)
+covs[1:4,1:5]
+
+ids <- covs$ID               # get a vector with the CpGs' ID
+covs <- as.data.frame(covs)  # convert to a data.frame
+
+rownames(covs) <- ids        # set the rownames as the saved covariates' IDs
+covs[1:5,1:5]
+
+covs <- covs[, -1]           # remove column 1
+covs[1:5,1:5]
+dim(covs)                    # 4 rows (covs) ; 130 columns (samples)
+
+## Keep only the covariates of interest (age, group, batch, and phase) -  Change for each EWAS
+covs <- covs[c(1,2,3,4), ]
+dim(covs)                    # 4 rows (covariates) ; 159 columns (samples)
+covs[1:4,1:5]
+
+### Check if there are NAs in both files
+table(is.na(rnts))           # the rnts file has no NA values
+table(is.na(covs))           # the covs file has no NA values
+
+### Remove those 14 NAs of the covariates file
+covs_filt <- covs[ , colSums(is.na(covs)) == 0]
+dim(covs_filt)               # 4 rows (covariates) ; 130 columns (samples)
+
+### Keep only common samples between the rnt and the covariates matrix
+rnts_filt <- rnts[ , colnames(rnts) %in% colnames(covs_filt)]
+dim(rnts_filt)               # 626262 rows (CpGs)  ; 130 columns (samples)
+
+covs_filt <- covs_filt[,colnames(covs_filt) %in% colnames(rnts)]
+dim(covs_filt)               # 4 rows (covariates) ; 130 columns (samples)
+
+### Sort the covariates file by the rnt file
+samples <- colnames(rnts_filt)                # gets a vector with the colnames of the rnt_filt file (samples' ID)
+
+index <- match(samples, colnames(covs_filt))  # set an index of the rnt_filt and pheno_filt files
+covs_filt <- covs_filt[ ,index]
+
+## Check if all samples in the betas_filt file are in the same order as the covs_filt file
+table(colnames(covs_filt) == colnames(rnts_filt))   # 130 TRUE
+
+## Create a matrix with beta values and the covariates file
+## in columns (CpG + covariates) ; rows (samples)
+
+## Format the covariates file
+covs_filt[1:4,1:5]
+
+colnames_covs <- rownames(covs_filt)          # get a vector with the covariates' names
+length(colnames_covs)                         # 4 - "Age" "Group" "Phase" "Batch"
+
+covs_t <- as.data.frame(t(covs_filt))         # transpose and convert to a data.frame
+class(covs_t)                                 # data.frame
+
+dim(covs_t)                                   # 130 rows (samples) ; 4 columns (covariates) 
+covs_t[1:5,1:4]
+
+### Format the rnts file
+rnts_filt[1:5,1:5]
+
+rnts_t <- as.data.frame(t(rnts_filt))         # transpose and convert to a data.frame
+class(rnts_t)                                 # data.frame
+
+dim(rnts_t)                                   # 130 rows (samples) ; 626262 columns (CpGs)
+rnts_t[1:5,1:5]
+
+### Check that the samples in the rnts_filt are in the same order as the covs_filt
+table(colnames(covs_filt) == colnames(rnts_filt))   # 130 TRUE
+
+### Merge the covariates and the betas data.frames  
+merged_df <- merge(x = rnts_t, y = covs_t, by ="row.names")
+dim(merged_df)    # 130 rows (samples) ; 626267 columns (row.names + 626262 CpGs,4 covariates)
+
+rownames(merged_df) <- merged_df$Row.names    # assign as rownames the sample's ID
+merged_df <- merged_df[,-1]                   # remove column 1
+
+dim(merged_df)    # 130 rows (samples) ; 626266 columns (626262 CpGs + 4 covariates)
+merged_df[1:5,1:5]
+tail(colnames(merged_df))                     # "Age", "Group", "Phase", "Batch"
+
+#-------------------------------------------------------------------------------
+# EWAS model all_1: methylation ~ group + age + phase + batch + 20mPCs
+# ------------------------------------------------------------------------------
+
+# Get a data.frame only with the methylation values
+cpgs <- rownames(rnts_filt)                   # gets a vector with the CpGs' IDs
+length(cpgs)                                  # 626262
+
+# Create a subset of the CpGs data.frame in the merged_df
+subset_cpgs <- merged_df[ ,cpgs]              # subset of the CpGs present in the merged_df
+dim(subset_cpgs)                              # 130  626262
+
+rownames(subset_cpgs) <- rownames(merged_df)  # set the rownames as the sample's IDs
+dim(merged_df)                                # 130 rows (samples) ; 626266 columns (626262 CpGs + 4 covariates)
+tail(colnames(merged_df))                     # "Age", "Group", "Phase", "Batch"
+
+# Check that the methylation values in the subset_cpgs data.frame are numeric
+(sapply(subset_cpgs[ ,c(1:6)], class))  
+# make sure methylation values are considered as numeric
+#(sapply(subset_cpgs, class))                # numeric
+
+## Apply as.numeric to quantitative covariates ("Age")
+merged_df[,"Age"] <- as.numeric(merged_df[,"Age"])
+class(merged_df$Age)                         # numeric
+
+dim(merged_df)                               # 130 rows (samples) ; 626266 columns (626262 CpGs + 4 covariates)
+merged_df[1:5,1:5]
+tail(colnames(merged_df))                    # "Age", "Group", "Phase", "Batch"
+
+## Apply as.factor to categorical variables ("Unit", "Group", "Phase", "Batch", and "Phase")
+merged_df[, c("Group", "Batch", "Phase")] <- lapply(merged_df[, c("Group", "Batch", "Phase")], as.factor)
+#class(merged_df$Unit)                       # factor
+class(merged_df$Group)                       # factor
+class(merged_df$Phase)                       # factor
+class(merged_df$Batch)                       # factor
+#class(merged_df$Contraceptive)              # factor
+
+# Save the rnt and the rnt_cov data.frames
+fwrite(subset_cpgs, file = "group_all_model_rnt_values_130_samples.txt", col.names = T, row.names = T, quote = F, sep = "\t")
+
+fwrite(merged_df, file = "group_all_model_rnt_values_130_samples_4_covs.txt", col.names = T, row.names = T, quote = F, sep = "\t")
+
+#-------------------------------------------------------------------------------
+
+### Perform the multiple linear model (methylation ~ Group + Age + Phase + Batch)
+fit <- lm(as.matrix(subset_cpgs) ~ Group + Age + Phase + Batch, data = merged_df)     # Covariates used, Age, Phase, and Batch
+
+# Get the residuals from the multiple linear model (3 covariates)
+residuals <- fit$residuals
+dim(residuals)            # 130 rows (samples) ; 626262 columns (CpGs)
+
+### Perform the PCA on the residuals
+pca <- prcomp((na.omit(residuals)))
+
+#Add the "m" at the beginning
+colnames(pca$x) <- paste("m", colnames(pca$x), sep = "")
+
+### Get the variance explained per PC
+prop <- pca$sdev ^2 / sum(pca$sdev ^2) * 100
+cumprop <- cumsum(pca$sdev^2)/sum(pca$sdev^2)*100
+pcn<-paste("mPC", 1:length(prop), sep = "")
+pc<-data.frame(pcn,prop,cumprop)
+
+pc[1:5,1:3]
+#   pcn      prop  cumprop
+#1 mPC1 28.412154 28.41215
+#2 mPC2  7.140567 35.55272
+#3 mPC3  4.404713 39.95743
+#4 mPC4  3.268189 43.22562
+#5 mPC5  2.763715 45.98934
+
+## Select PCs explaining 80% of the accumulative variance
+pc <- pc[cumprop <= 80, ]
+dim(pc)           # 59 mPCs explain 80% of the accumulative variance
+
+## Write a text file with the first 20 mPCs
+pca20 <- pca$x[, c(1:20)]
+pca20 <- cbind("samples" = rownames(pca20), pca20)
+rownames(pca20) <- seq_along(rownames(pca20))
+
+write.table(x = pca20, file = "group_all_mod_a_residualized_20mPCs_3covs.txt", col.names = T, row.names = F, sep = "\t", quote = F)
+
+#-------------------------------------------------------------------------------
+# EWAS model all_3: methylation ~ group ; no covs + 20mPCs
+# ------------------------------------------------------------------------------
+### Perform the multiple linear model (methylation ~ Group ; no covs)
+fit <- lm(as.matrix(subset_cpgs) ~ Group, data = merged_df)     # no covs used
+
+# Get the residuals from the multiple linear model (3 covariates)
+residuals <- fit$residuals
+dim(residuals)            # 132 rows (samples) ; 626262 columns (CpGs)
+
+### Perform the PCA on the residuals
+pca <- prcomp((na.omit(residuals)))
+
+#Add the "m" at the beginning
+colnames(pca$x) <- paste("m", colnames(pca$x), sep = "")
+
+### Get the variance explained per PC
+prop <- pca$sdev ^2 / sum(pca$sdev ^2) * 100
+cumprop <- cumsum(pca$sdev^2)/sum(pca$sdev^2)*100
+pcn<-paste("mPC", 1:length(prop), sep = "")
+pc<-data.frame(pcn,prop,cumprop)
+
+pc[1:5,1:3]
+#   pcn      prop  cumprop
+#1 mPC1 30.089379 30.08938
+#2 mPC2  7.194262 37.28364
+#3 mPC3  4.225750 41.50939
+#4 mPC4  3.077943 44.58733
+#5 mPC5  2.781710 47.36904
+
+## Select PCs explaining 80% of the accumulative variance
+pc <- pc[cumprop <= 80, ]
+dim(pc)           # 60 mPCs explain 80% of the accumulative variance
+
+## Write a text file with the first 20 mPCs
+pca20 <- pca$x[, c(1:20)]
+pca20 <- cbind("samples" = rownames(pca20), pca20)
+rownames(pca20) <- seq_along(rownames(pca20))
+
+write.table(x = pca20, file = "mpcs/group_all_mod_c_residualized_20mPCs_no_covs.txt", col.names = T, row.names = F, sep = "\t", quote = F)
